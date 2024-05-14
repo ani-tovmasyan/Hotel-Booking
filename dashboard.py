@@ -16,19 +16,23 @@ app = dash.Dash(__name__)
 hotel_bookings['is_canceled'] = pd.to_numeric(hotel_bookings['is_canceled'], errors='coerce')
 hotel_bookings['days_in_waiting_list'] = pd.to_numeric(hotel_bookings['days_in_waiting_list'], errors='coerce')
 hotel_bookings['required_car_parking_spaces'] = pd.to_numeric(hotel_bookings['required_car_parking_spaces'], errors='coerce')
+hotel_bookings['total_of_special_requests'] = pd.to_numeric(hotel_bookings['total_of_special_requests'], errors='coerce')
 
 app = dash.Dash(__name__)
 
 options = [{'label': 'Select All', 'value': 'ALL'}]
 options += [{'label': i, 'value': i} for i in hotel_bookings['country'].unique() if pd.notnull(i)]
 
-feature_options = [
-    {'label': 'Booking Count', 'value': 'booking_count'},
-    {'label': 'Cancellation Rate', 'value': 'cancellation_rate'},
-    {'label': 'Load Time', 'value': 'load_time'},
-    {'label': 'Days in Waiting List', 'value': 'days_in_waiting_list'},
-    {'label': 'Required Car Parking Spaces', 'value': 'required_car_parking_spaces'}
-]
+feature_options = [{'label': 'Booking Count', 'value': 'booking_count'},
+                   {'label': 'Cancellation Rate', 'value': 'cancellation_rate'},
+                   {'label': 'Load Time', 'value': 'load_time'},
+                   {'label': 'Days in Waiting List', 'value': 'days_in_waiting_list'},
+                   {'label': 'Required Car Parking Spaces', 'value': 'required_car_parking_spaces'}]
+
+metric_options = [{'label': 'Cancellation Rate', 'value': 'cancellation_rate'},
+                  {'label': 'Days in Waiting List', 'value': 'average_days_in_waiting_list'},
+                  {'label': 'Required Car Parking Spaces', 'value': 'average_required_car_parking_spaces'},
+                  {'label': 'Total of Special Requests', 'value': 'average_total_of_special_requests'}]
 
 
 app.layout = html.Div([
@@ -75,7 +79,18 @@ app.layout = html.Div([
                 ),
                 dcc.Graph(id='cancellation-pie-chart')
             ])
+        ]),
+        dcc.Tab(label='Customer Type Analysis', children=[
+            html.Div([
+                dcc.Dropdown(
+                    id='metrics-dropdown',
+                    options=metric_options,
+                    value=['cancellation_rate'],  # Default selected metrics
+                    multi=True
+                ),
+                dcc.Graph(id='customer-type-stacked-bar')
             ])
+        ])
     ])
 ])
 
@@ -168,6 +183,29 @@ def update_cancellation_pie(selected_countries, start_date, end_date):
                  title='Cancellation Rates by Selected Countries',
                  color_discrete_sequence=px.colors.sequential.RdBu)
     return fig
+
+@app.callback(
+    Output('customer-type-stacked-bar', 'figure'),
+    [Input('metrics-dropdown', 'value')])
+def update_customer_type_metrics(selected_metrics):
+    aggregates = {
+        'cancellation_rate': pd.NamedAgg(column='is_canceled', aggfunc='mean'),
+        'average_days_in_waiting_list': pd.NamedAgg(column='days_in_waiting_list', aggfunc='mean'),
+        'average_required_car_parking_spaces': pd.NamedAgg(column='required_car_parking_spaces', aggfunc='mean'),
+        'average_total_of_special_requests': pd.NamedAgg(column='total_of_special_requests', aggfunc='mean')
+    }
+    
+    selected_aggregates = {key: aggregates[key] for key in selected_metrics}
+    
+    customer_metrics = hotel_bookings.groupby('customer_type').agg(**selected_aggregates).reset_index()
+    
+    customer_metrics_melted = customer_metrics.melt(id_vars='customer_type', var_name='Metric', value_name='Value')
+
+    fig = px.bar(customer_metrics_melted, x='customer_type', y='Value', color='Metric',
+                 title='Metrics by Customer Type',
+                 barmode='group')
+    return fig
+
 
 if __name__ == '__main__':
     app.run_server(debug=True)
