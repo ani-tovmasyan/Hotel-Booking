@@ -13,9 +13,23 @@ hotel_bookings['arrival_date'] = pd.to_datetime(hotel_bookings['arrival_date_yea
 bookings_by_date = hotel_bookings.groupby('arrival_date').size().reset_index(name='number_of_bookings')
 
 app = dash.Dash(__name__)
+hotel_bookings['is_canceled'] = pd.to_numeric(hotel_bookings['is_canceled'], errors='coerce')
+hotel_bookings['days_in_waiting_list'] = pd.to_numeric(hotel_bookings['days_in_waiting_list'], errors='coerce')
+hotel_bookings['required_car_parking_spaces'] = pd.to_numeric(hotel_bookings['required_car_parking_spaces'], errors='coerce')
+
+app = dash.Dash(__name__)
 
 options = [{'label': 'Select All', 'value': 'ALL'}]
-options += [{'label': i, 'value': i} for i in hotel_bookings['country'].unique() if type(i)==str]
+options += [{'label': i, 'value': i} for i in hotel_bookings['country'].unique() if pd.notnull(i)]
+
+feature_options = [
+    {'label': 'Booking Count', 'value': 'booking_count'},
+    {'label': 'Cancellation Rate', 'value': 'cancellation_rate'},
+    {'label': 'Load Time', 'value': 'load_time'},
+    {'label': 'Days in Waiting List', 'value': 'days_in_waiting_list'},
+    {'label': 'Required Car Parking Spaces', 'value': 'required_car_parking_spaces'}
+]
+
 
 app.layout = html.Div([
     dcc.Tabs([
@@ -35,12 +49,36 @@ app.layout = html.Div([
             dcc.Dropdown(
                 id='country-dropdown',
                 options=options,
-                value=['ALL'],  
-                multi=True  
+                value=['ALL'],
+                multi=True
+            ),
+            dcc.Dropdown(
+                id='feature-dropdown',
+                options=feature_options,
+                value='booking_count'
             )
-        ])
+        ]),
+        dcc.Tab(label='Cancellation Analysis', children=[
+            html.Div([
+                dcc.Dropdown(
+                    id='country-select',
+                    options=options,
+                    value=[options[0]['value']],  # Default to 'Select All'
+                    multi=True
+                ),
+                dcc.DatePickerRange(
+                    id='date-range-select',
+                    min_date_allowed=hotel_bookings['arrival_date'].min(),
+                    max_date_allowed=hotel_bookings['arrival_date'].max(),
+                    start_date=hotel_bookings['arrival_date'].min(),
+                    end_date=hotel_bookings['arrival_date'].max()
+                ),
+                dcc.Graph(id='cancellation-pie-chart')
+            ])
+            ])
     ])
 ])
+
 
 @app.callback(
     Output('booking-trend', 'figure'),
@@ -66,23 +104,69 @@ def update_booking_trend(selected_year):
 
 @app.callback(
     Output('guest-geo-dist', 'figure'),
-    Input('country-dropdown', 'value'))
-def update_geo_distribution(selected_countries):
-    # Check if no countries are selected explicitly by checking the length of the list
+    [Input('country-dropdown', 'value'),
+     Input('feature-dropdown', 'value')])
+def update_geo_distribution(selected_countries, selected_feature):
     if selected_countries is None or len(selected_countries) == 0:
         return px.choropleth(title='Select countries for the distribution')
-    country_counts = hotel_bookings['country'].value_counts().reset_index()
-    country_counts.columns = ['country', 'number_of_bookings']
-
-    # Handling "Select All" option
-    if 'ALL' not in selected_countries:
-        country_counts = country_counts[country_counts.country.isin(selected_countries)]
-
     
-    fig = px.choropleth(country_counts, locations='country', 
-                        color='number_of_bookings', scope="world",
-                        title='Guest Geographic Distribution',
-                        color_continuous_scale=px.colors.sequential.Plasma)
+    if 'ALL' not in selected_countries:
+        filtered_data = hotel_bookings[hotel_bookings['country'].isin(selected_countries)]
+    else:
+        filtered_data = hotel_bookings.copy()
+
+    if selected_feature == 'cancellation_rate':
+        feature_data = filtered_data.groupby('country')['is_canceled'].mean().reset_index()
+        feature_data.columns = ['country', 'value']
+        color_scale = px.colors.sequential.Blues
+        title = 'Cancellation Rate by Country'
+    elif selected_feature == 'days_in_waiting_list':
+        feature_data = filtered_data.groupby('country')['days_in_waiting_list'].mean().reset_index()
+        feature_data.columns = ['country', 'value']
+        color_scale = px.colors.sequential.Greens
+        title = 'Average Days in Waiting List by Country'
+    elif selected_feature == 'required_car_parking_spaces':
+        feature_data = filtered_data.groupby('country')['required_car_parking_spaces'].mean().reset_index()
+        feature_data.columns = ['country', 'value']
+        color_scale = px.colors.sequential.Purples
+        title = 'Average Required Car Parking Spaces by Country'
+    else:  
+        feature_data = filtered_data.groupby('country').size().reset_index(name='value')
+        feature_data.columns = ['country', 'value']
+        color_scale = px.colors.sequential.Plasma
+        title = 'Booking Count by Country'
+    
+    fig = px.choropleth(feature_data, locations='country',
+                        color='value', scope="world",
+                        title=title,
+                        color_continuous_scale=color_scale)
+    return fig
+
+@app.callback(
+    Output('cancellation-pie-chart', 'figure'),
+    [Input('country-select', 'value'),
+     Input('date-range-select', 'start_date'),
+     Input('date-range-select', 'end_date')])
+def update_cancellation_pie(selected_countries, start_date, end_date):
+    if 'ALL' in selected_countries or not selected_countries:
+        selected_countries = [option['value'] for option in options if option['value'] != 'ALL']
+    
+    filtered_data = hotel_bookings[
+        (hotel_bookings['country'].isin(selected_countries)) &
+        (hotel_bookings['arrival_date'] >= pd.to_datetime(start_date)) &
+        (hotel_bookings['arrival_date'] <= pd.to_datetime(end_date))
+    ]
+    
+    cancellation_data = filtered_data.groupby('country').agg(
+        total_bookings=pd.NamedAgg(column='is_canceled', aggfunc='size'),
+        canceled_bookings=pd.NamedAgg(column='is_canceled', aggfunc='sum')
+    )
+    cancellation_data['cancellation_rate'] = (cancellation_data['canceled_bookings'] / cancellation_data['total_bookings']) * 100
+    cancellation_data.reset_index(inplace=True)
+    
+    fig = px.pie(cancellation_data, values='cancellation_rate', names='country',
+                 title='Cancellation Rates by Selected Countries',
+                 color_discrete_sequence=px.colors.sequential.RdBu)
     return fig
 
 if __name__ == '__main__':
